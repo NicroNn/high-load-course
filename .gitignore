@@ -18,7 +18,11 @@ target/
 *.iws
 *.iml
 *.ipr
-./http-client.env.json
+/http-client.env.json
+/http-client.private.env.json
+/.m2-repository/
+/grafana/data/
+/prometheus/data/
 
 ### NetBeans ###
 /nbproject/private/

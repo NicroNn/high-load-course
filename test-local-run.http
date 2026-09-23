@@ -1,4 +1,16 @@
-### Run test locally
+### Case 1: acc-3, 11 purchases/sec, 1200 purchases (select environment vars)
+POST http://localhost:1234/test/run
+Content-Type: application/json
+
+{
+  "serviceName": "{{serviceName}}",
+  "token": "{{token}}",
+  "ratePerSecond": 11,
+  "testCount": 1200,
+  "processingTimeMillis": 80000
+}
+
+### Smoke test: check the setup before the full case (does not count as passing case 1)
 POST http://localhost:1234/test/run
 Content-Type: application/json
 
@@ -6,9 +18,12 @@ Content-Type: application/json
   "serviceName": "{{serviceName}}",
   "token": "{{token}}",
   "ratePerSecond": 1,
-  "testCount": 100,
+  "testCount": 10,
   "processingTimeMillis": 80000
 }
+
+### Read account limits (find acc-3 in the response)
+GET http://localhost:1234/external/accounts?serviceName={{serviceName}}&token={{token}}
 
 ### Stop running test to save time and resources
 # @timeout 120

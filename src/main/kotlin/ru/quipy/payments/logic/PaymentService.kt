@@ -16,7 +16,7 @@ interface PaymentService {
  * !!! You can extend the interface with additional methods if needed. !!!
 
  */
-interface PaymentExternalSystemAdapter {
+interface PaymentExternalSystemAdapter : AutoCloseable {
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun name(): String
@@ -24,6 +24,8 @@ interface PaymentExternalSystemAdapter {
     fun price(): Int
 
     fun isEnabled(): Boolean
+
+    override fun close() = Unit
 }
 
 /**
