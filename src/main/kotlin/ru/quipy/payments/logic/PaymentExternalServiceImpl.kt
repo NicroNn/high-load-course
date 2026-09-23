@@ -9,8 +9,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.PacedRateLimiter
-import ru.quipy.core.EventSourcingService
-import ru.quipy.payments.api.PaymentAggregate
 import java.io.IOException
 import java.time.Duration
 import java.util.UUID
@@ -21,7 +19,7 @@ import java.util.concurrent.TimeUnit
 
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
-    private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+    private val paymentEvents: PaymentEventWriter,
     private val paymentProviderHostPort: String,
     private val token: String,
 ) : PaymentExternalSystemAdapter {
@@ -79,7 +77,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         val transactionId = UUID.randomUUID()
-        paymentESService.update(paymentId) {
+        paymentEvents.update(paymentId) {
             it.logSubmission(true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
@@ -117,7 +115,7 @@ class PaymentExternalSystemAdapterImpl(
             Result(false, "Provider request failed: ${e.javaClass.simpleName}; outcome may be unknown")
         }
 
-        paymentESService.update(paymentId) {
+        paymentEvents.update(paymentId) {
             it.logProcessing(result.success, now(), transactionId, result.reason)
         }
         logger.debug("[$accountName] Payment $paymentId completed: ${result.success}")
@@ -125,10 +123,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private fun recordRejection(paymentId: UUID, paymentStartedAt: Long, reason: String) {
         val transactionId = UUID.randomUUID()
-        paymentESService.update(paymentId) {
+        paymentEvents.update(paymentId) {
             it.logSubmission(false, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
-        paymentESService.update(paymentId) {
+        paymentEvents.update(paymentId) {
             it.logProcessing(false, now(), transactionId, reason)
         }
     }

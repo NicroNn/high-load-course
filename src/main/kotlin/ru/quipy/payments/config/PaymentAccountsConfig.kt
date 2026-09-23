@@ -65,13 +65,14 @@ class PaymentAccountsConfig {
             .filter { it.accountName in requestedAccounts }
         val missingAccounts = requestedAccounts - accounts.map { it.accountName }.toSet()
         require(missingAccounts.isEmpty()) { "Provider did not return configured accounts: $missingAccounts" }
+        val paymentEvents = EventSourcingPaymentEventWriter(paymentService)
         return accounts
             .map { it.copy(enabled = true) }
             .onEach(::println)
             .map {
                 PaymentExternalSystemAdapterImpl(
                     it,
-                    paymentService,
+                    paymentEvents,
                     paymentProviderHostPort,
                     token
                 )

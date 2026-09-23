@@ -4,8 +4,6 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito
-import ru.quipy.core.EventSourcingService
 import ru.quipy.domain.Event
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.api.PaymentProcessedEvent
@@ -118,7 +116,7 @@ class PaymentExternalSystemAdapterTest {
     private fun adapter(provider: Provider, events: PaymentEvents, parallel: Int = 1, rate: Int = 10) =
         PaymentExternalSystemAdapterImpl(
             PaymentAccountProperties("test", "acc-3", parallel, rate, 1, Duration.ZERO, true),
-            events.service, provider.address, "test-token",
+            events, provider.address, "test-token",
         )
 
     private fun PaymentExternalSystemAdapter.submit(events: PaymentEvents, deadline: Long = now() + 10_000) {
@@ -127,16 +125,13 @@ class PaymentExternalSystemAdapterTest {
         performPaymentAsync(id, 100, now(), deadline)
     }
 
-    private class PaymentEvents {
+    private class PaymentEvents : PaymentEventWriter {
         val states = ConcurrentHashMap<UUID, PaymentAggregateState>()
         val submissions = CopyOnWriteArrayList<PaymentSubmittedEvent>()
         private val processed = LinkedBlockingQueue<PaymentProcessedEvent>()
 
-        @Suppress("UNCHECKED_CAST")
-        val service = Mockito.mock(EventSourcingService::class.java) { invocation ->
-            check(invocation.method.name == "update")
-            val state = states.getValue(invocation.getArgument(0))
-            val command = invocation.getArgument<(PaymentAggregateState) -> Event<PaymentAggregate>>(2)
+        override fun update(paymentId: UUID, command: (PaymentAggregateState) -> Event<PaymentAggregate>) {
+            val state = states.getValue(paymentId)
             synchronized(state) {
                 val event = command(state)
                 when (event) {
@@ -149,9 +144,8 @@ class PaymentExternalSystemAdapterTest {
                         processed.add(event)
                     }
                 }
-                event
             }
-        } as EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>
+        }
 
         fun results(count: Int) = (1..count).map {
             requireNotNull(processed.poll(10, TimeUnit.SECONDS)) { "Payment did not complete" }

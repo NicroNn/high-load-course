@@ -1,0 +1,6 @@
+# Only these files are needed by the Dockerfile.
+**
+!Dockerfile
+!pom.xml
+!src/
+!src/**
