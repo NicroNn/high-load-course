@@ -36,19 +36,29 @@ class OrderPayer {
         CallerBlockingRejectedExecutionHandler()
     )
 
-    fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
+    fun processPayment(
+        orderId: UUID,
+        amount: Int,
+        paymentId: UUID,
+        deadline: Long,
+        permit: PaymentAdmissionControl.Permit,
+    ): Long {
         val createdAt = System.currentTimeMillis()
         paymentExecutor.submit {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
-            }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
+            try {
+                val createdEvent = paymentESService.create {
+                    it.create(
+                        paymentId,
+                        orderId,
+                        amount
+                    )
+                }
+                logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
-            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+                paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+            } finally {
+                permit.close()
+            }
         }
         return createdAt
     }
