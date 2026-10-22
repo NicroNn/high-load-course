@@ -3,9 +3,13 @@ package ru.quipy.apigateway
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.*
+import org.springframework.web.server.ResponseStatusException
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
+import ru.quipy.payments.logic.PaymentAdmissionControl
 import java.util.*
 
 @RestController
@@ -18,6 +22,9 @@ class APIController {
 
     @Autowired
     private lateinit var orderPayer: OrderPayer
+
+    @Autowired
+    private lateinit var paymentAdmissionControl: PaymentAdmissionControl
 
     @PostMapping("/users")
     fun createUser(@RequestBody req: CreateUserRequest): User {
@@ -56,19 +63,32 @@ class APIController {
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
-        val paymentId = UUID.randomUUID()
-        val order = orderRepository.findById(orderId)?.let {
-            orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
-            it
-        } ?: throw IllegalArgumentException("No such order $orderId")
+        val permit = paymentAdmissionControl.tryAcquire()
+            ?: throw PaymentRejectedException(System.currentTimeMillis() + 1_000)
+        try {
+            val paymentId = UUID.randomUUID()
+            val order = orderRepository.findById(orderId)?.let {
+                orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
+                it
+            } ?: throw IllegalArgumentException("No such order $orderId")
 
-
-        val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
-        return PaymentSubmissionDto(createdAt, paymentId)
+            val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline, permit)
+            return PaymentSubmissionDto(createdAt, paymentId)
+        } catch (error: Throwable) {
+            permit.close()
+            throw error
+        }
     }
 
     class PaymentSubmissionDto(
         val timestamp: Long,
         val transactionId: UUID
     )
+}
+
+private class PaymentRejectedException(private val retryAfter: Long) :
+    ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "All payment slots are occupied") {
+    override fun getHeaders(): HttpHeaders = HttpHeaders().apply {
+        set(HttpHeaders.RETRY_AFTER, retryAfter.toString())
+    }
 }

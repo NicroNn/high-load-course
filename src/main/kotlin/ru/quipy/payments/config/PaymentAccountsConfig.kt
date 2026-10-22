@@ -3,23 +3,20 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.*
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.util.*
 
 
 @Configuration
 class PaymentAccountsConfig {
     companion object {
-        private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
     }
 
@@ -36,19 +33,25 @@ class PaymentAccountsConfig {
     lateinit var allowedAccounts: List<String>
 
     @Bean
-    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>): List<PaymentExternalSystemAdapter> {
-        val request = HttpRequest.newBuilder()
-            .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
-            .GET()
+    fun accountAdapters(
+        paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+        paymentHttpClient: OkHttpClient,
+    ): List<PaymentExternalSystemAdapter> {
+        val request = Request.Builder()
+            .url("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token")
+            .get()
             .build()
 
-        val resp = javaClient.send(request, HttpResponse.BodyHandlers.ofString())
+        val accounts = paymentHttpClient.newCall(request).execute().use { response ->
+            check(response.isSuccessful) { "Payment accounts request failed: HTTP ${response.code}" }
+            mapper.readValue<List<PaymentAccountProperties>>(
+                checkNotNull(response.body).string(),
+                mapper.typeFactory.constructCollectionType(List::class.java, PaymentAccountProperties::class.java)
+            )
+        }
 
         println("\nPayment accounts list:")
-        return mapper.readValue<List<PaymentAccountProperties>>(
-            resp.body(),
-            mapper.typeFactory.constructCollectionType(List::class.java, PaymentAccountProperties::class.java)
-        )
+        return accounts
             .filter { it.accountName in allowedAccounts }
             .map { it.copy(enabled = true) }
             .onEach(::println)
@@ -57,7 +60,8 @@ class PaymentAccountsConfig {
                     it,
                     paymentService,
                     paymentProviderHostPort,
-                    token
+                    token,
+                    paymentHttpClient,
                 )
             }
     }
