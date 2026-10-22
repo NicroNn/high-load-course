@@ -3,6 +3,7 @@ package ru.quipy.apigateway
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
@@ -63,7 +64,7 @@ class APIController {
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
         val permit = paymentAdmissionControl.tryAcquire()
-            ?: throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "All payment slots are occupied")
+            ?: throw PaymentRejectedException(System.currentTimeMillis() + 1_000)
         try {
             val paymentId = UUID.randomUUID()
             val order = orderRepository.findById(orderId)?.let {
@@ -83,4 +84,11 @@ class APIController {
         val timestamp: Long,
         val transactionId: UUID
     )
+}
+
+private class PaymentRejectedException(private val retryAfter: Long) :
+    ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "All payment slots are occupied") {
+    override fun getHeaders(): HttpHeaders = HttpHeaders().apply {
+        set(HttpHeaders.RETRY_AFTER, retryAfter.toString())
+    }
 }
