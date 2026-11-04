@@ -36,6 +36,7 @@ class PaymentAccountsConfig {
     fun accountAdapters(
         paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
         paymentHttpClient: OkHttpClient,
+        admission: PaymentAdmissionControl,
     ): List<PaymentExternalSystemAdapter> {
         val request = Request.Builder()
             .url("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token")
@@ -62,6 +63,7 @@ class PaymentAccountsConfig {
                     paymentProviderHostPort,
                     token,
                     paymentHttpClient,
+                    admission,
                 )
             }
     }

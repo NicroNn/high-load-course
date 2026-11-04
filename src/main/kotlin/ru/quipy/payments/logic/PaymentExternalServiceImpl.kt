@@ -22,6 +22,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentProviderHostPort: String,
     private val token: String,
     private val client: OkHttpClient,
+    private val admission: PaymentAdmissionControl,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -41,9 +42,20 @@ class PaymentExternalSystemAdapterImpl(
 
     private val parallelSemaphore = OngoingWindow(parallelRequests)
 
+    private val paymentClient = client.newBuilder()
+        .addNetworkInterceptor { chain ->
+            rateLimiter.tickBlocking()
+            admission.onDispatch()
+            try {
+                chain.proceed(chain.request())
+            } finally {
+                admission.onCompletion()
+            }
+        }
+        .build()
+
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         parallelSemaphore.acquire()
-        rateLimiter.tickBlocking()
 
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
@@ -63,7 +75,7 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
-            client.newCall(request).execute().use { response ->
+            paymentClient.newCall(request).execute().use { response ->
                 val body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
