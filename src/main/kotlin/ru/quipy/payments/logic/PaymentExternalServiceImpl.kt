@@ -55,6 +55,13 @@ class PaymentExternalSystemAdapterImpl(
         .build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+        do {
+            val shouldRetry = performPaymentAttempt(paymentId, amount, paymentStartedAt)
+            // acc-8 takes up to twice its average; leave 250 ms for the network/database.
+        } while (shouldRetry && now() + requestAverageProcessingTime.multipliedBy(2).toMillis() + 250 < deadline)
+    }
+
+    private fun performPaymentAttempt(paymentId: UUID, amount: Int, paymentStartedAt: Long): Boolean {
         parallelSemaphore.acquire()
 
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -90,6 +97,7 @@ class PaymentExternalSystemAdapterImpl(
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
+                return !body.result && body.message == "Temporary error"
             }
         } catch (e: Exception) {
             when (e) {
@@ -111,6 +119,7 @@ class PaymentExternalSystemAdapterImpl(
         } finally {
             parallelSemaphore.release()
         }
+        return false
     }
 
     override fun price() = properties.price
