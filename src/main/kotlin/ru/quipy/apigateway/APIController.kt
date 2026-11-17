@@ -4,8 +4,8 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import org.springframework.web.server.ResponseStatusException
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
 import ru.quipy.payments.logic.PaymentAdmissionControl
@@ -61,9 +61,12 @@ class APIController {
     }
 
     @PostMapping("/orders/{orderId}/payment")
-    fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
-        val permit = paymentAdmissionControl.tryAcquire()
-            ?: throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "All payment slots are occupied")
+    fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
+        val permit = paymentAdmissionControl.tryAcquire(deadline)
+            ?: return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                // Bombardier expects a Unix timestamp in milliseconds in this header.
+                .header("Retry-After", (System.currentTimeMillis() + 100).toString())
+                .build()
         try {
             val paymentId = UUID.randomUUID()
             val order = orderRepository.findById(orderId)?.let {
@@ -72,7 +75,7 @@ class APIController {
             } ?: throw IllegalArgumentException("No such order $orderId")
 
             val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline, permit)
-            return PaymentSubmissionDto(createdAt, paymentId)
+            return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
         } catch (error: Throwable) {
             permit.close()
             throw error

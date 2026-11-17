@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 
 @Service
 class OrderPayer(
-    @Value("\${payment.max-in-flight}") private val maxInFlight: Int,
+    @Value("\${payment.worker-threads}") private val workerThreads: Int,
 ) {
 
     companion object {
@@ -30,8 +30,8 @@ class OrderPayer(
     private lateinit var paymentService: PaymentService
 
     private val paymentExecutor = ThreadPoolExecutor(
-        maxInFlight,
-        maxInFlight,
+        workerThreads,
+        workerThreads,
         0L,
         TimeUnit.MILLISECONDS,
         LinkedBlockingQueue(8_000),
