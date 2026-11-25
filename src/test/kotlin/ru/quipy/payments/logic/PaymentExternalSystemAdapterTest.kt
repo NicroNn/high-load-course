@@ -1,6 +1,7 @@
 package ru.quipy.payments.logic
 
 import com.sun.net.httpserver.HttpServer
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import okhttp3.OkHttpClient
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -16,6 +17,7 @@ import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class PaymentExternalSystemAdapterTest {
@@ -23,6 +25,7 @@ class PaymentExternalSystemAdapterTest {
     fun `temporary provider error is retried with a new transaction and recorded outcomes`() {
         withPayment(listOf(Outcome(false, "Temporary error"), Outcome(true))) { result ->
             assertEquals(2, result.requests.size)
+            assertEquals(1.0, result.retries)
             assertEquals(listOf(result.paymentId.toString(), result.paymentId.toString()),
                 result.requests.map { it.getValue("paymentId") })
             val transactions = result.requests.map { UUID.fromString(it.getValue("transactionId")) }
@@ -68,16 +71,46 @@ class PaymentExternalSystemAdapterTest {
         }
     }
 
-    private data class Outcome(val success: Boolean, val message: String? = null)
+    @Test
+    fun `acc-7 retries a slow provider response before the deadline`() {
+        withPayment(listOf(Outcome(true, delayMillis = 3_000), Outcome(true)),
+            budgetMillis = 6_000, accountName = "acc-7") { result ->
+            assertEquals(2, result.requests.size)
+            assertEquals(1.0, result.timeouts)
+            assertEquals(1.0, result.retries)
+            val processed = result.events.filterIsInstance<PaymentProcessedEvent>()
+            assertEquals(listOf(false, true), processed.map { it.success })
+            assertEquals("Request timeout.", processed.first().reason)
+        }
+    }
+
+    @Test
+    fun `acc-7 skips a timeout retry that cannot fit before the deadline`() {
+        withPayment(listOf(Outcome(true, delayMillis = 3_000)),
+            budgetMillis = 2_800, accountName = "acc-7") { result ->
+            assertEquals(1, result.requests.size)
+            assertEquals(1.0, result.timeouts)
+            assertEquals(0.0, result.retries)
+        }
+    }
+
+    private data class Outcome(val success: Boolean, val message: String? = null, val delayMillis: Long = 0)
 
     private data class Result(
         val paymentId: UUID,
         val requests: List<Map<String, String>>,
         val events: List<Event<PaymentAggregate>>,
+        val retries: Double,
+        val timeouts: Double,
     )
 
     @Suppress("UNCHECKED_CAST")
-    private fun withPayment(outcomes: List<Outcome>, budgetMillis: Long = 3_500, assertions: (Result) -> Unit) {
+    private fun withPayment(
+        outcomes: List<Outcome>,
+        budgetMillis: Long = 3_500,
+        accountName: String = "acc-8",
+        assertions: (Result) -> Unit,
+    ) {
         val paymentId = UUID.randomUUID()
         val state = PaymentAggregateState().apply {
             paymentCreatedApply(create(paymentId, UUID.randomUUID(), 42))
@@ -101,6 +134,8 @@ class PaymentExternalSystemAdapterTest {
         val requests = CopyOnWriteArrayList<Map<String, String>>()
         val responseIndex = AtomicInteger()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val executor = Executors.newCachedThreadPool()
+        server.executor = executor
         server.createContext("/external/process") { exchange ->
             val parameters = exchange.requestURI.rawQuery.split('&').associate {
                 val (key, value) = it.split('=', limit = 2)
@@ -108,6 +143,7 @@ class PaymentExternalSystemAdapterTest {
             }
             requests.add(parameters)
             val outcome = outcomes.getOrElse(responseIndex.getAndIncrement()) { Outcome(true) }
+            Thread.sleep(outcome.delayMillis)
             val message = outcome.message?.let { "\"$it\"" } ?: "null"
             val body = """{"transactionId":"${parameters.getValue("transactionId")}","paymentId":"${parameters.getValue("paymentId")}","result":${outcome.success},"message":$message}""".toByteArray()
             exchange.responseHeaders.add("Content-Type", "application/json")
@@ -116,21 +152,29 @@ class PaymentExternalSystemAdapterTest {
             exchange.close()
         }
         val client = OkHttpClient()
+        val registry = SimpleMeterRegistry()
         server.start()
         try {
             val adapter = PaymentExternalSystemAdapterImpl(
-                PaymentAccountProperties("test-service", "acc-8", 50, 10, 30, Duration.ofMillis(700), true),
+                PaymentAccountProperties("test-service", accountName, 50, 10, 30, Duration.ofMillis(700), true),
                 paymentService,
                 "127.0.0.1:${server.address.port}",
                 "test-token",
                 client,
                 PaymentAdmissionControl(300, 10),
+                registry,
             )
             val startedAt = now()
             adapter.performPaymentAsync(paymentId, 42, startedAt, startedAt + budgetMillis)
-            assertions(Result(paymentId, requests.toList(), events))
+            assertions(Result(
+                paymentId, requests.toList(), events,
+                registry.get("payment.retries").tag("account", accountName).counter().count(),
+                registry.get("payment.attempt.timeouts").tag("account", accountName).counter().count(),
+            ))
         } finally {
             server.stop(0)
+            executor.shutdownNow()
+            registry.close()
             client.connectionPool.evictAll()
             client.dispatcher.executorService.shutdownNow()
         }

@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -10,9 +11,11 @@ import ru.quipy.common.utils.OngoingWindow
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
@@ -23,6 +26,7 @@ class PaymentExternalSystemAdapterImpl(
     private val token: String,
     private val client: OkHttpClient,
     private val admission: PaymentAdmissionControl,
+    registry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -38,16 +42,30 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
+    // Normal acc-7 responses take up to about 1.2 s. Slow responses take over 9 s.
+    private val attemptTimeoutMillis = 1_500.takeIf { accountName == "acc-7" }
+    private val retryBudgetMillis =
+        (attemptTimeoutMillis?.toLong() ?: requestAverageProcessingTime.multipliedBy(2).toMillis()) + 250
+    private val retries = registry.counter("payment.retries", "account", accountName)
+    private val timeouts = registry.counter("payment.attempt.timeouts", "account", accountName)
+
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
 
     private val parallelSemaphore = OngoingWindow(parallelRequests)
 
     private val paymentClient = client.newBuilder()
+        .apply { attemptTimeoutMillis?.let { readTimeout(it.toLong(), TimeUnit.MILLISECONDS) } }
         .addNetworkInterceptor { chain ->
             rateLimiter.tickBlocking()
+            val request = chain.request()
+            val attempt = checkNotNull(request.tag(Attempt::class.java))
+            if (attemptTimeoutMillis != null && now() + retryBudgetMillis >= attempt.deadline) {
+                throw IOException("Insufficient time before payment deadline.")
+            }
             admission.onDispatch()
             try {
-                chain.proceed(chain.request())
+                if (attempt.retry) retries.increment()
+                chain.proceed(request)
             } finally {
                 admission.onCompletion()
             }
@@ -55,13 +73,16 @@ class PaymentExternalSystemAdapterImpl(
         .build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+        var retry = false
         do {
-            val shouldRetry = performPaymentAttempt(paymentId, amount, paymentStartedAt)
-            // acc-8 takes up to twice its average; leave 250 ms for the network/database.
-        } while (shouldRetry && now() + requestAverageProcessingTime.multipliedBy(2).toMillis() + 250 < deadline)
+            if (!performPaymentAttempt(paymentId, amount, paymentStartedAt, Attempt(deadline, retry))) return
+            retry = true
+        } while (now() + retryBudgetMillis < deadline)
     }
 
-    private fun performPaymentAttempt(paymentId: UUID, amount: Int, paymentStartedAt: Long): Boolean {
+    private data class Attempt(val deadline: Long, val retry: Boolean)
+
+    private fun performPaymentAttempt(paymentId: UUID, amount: Int, paymentStartedAt: Long, attempt: Attempt): Boolean {
         parallelSemaphore.acquire()
 
         try {
@@ -80,6 +101,7 @@ class PaymentExternalSystemAdapterImpl(
             try {
                 val request = Request.Builder().run {
                     url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+                    tag(Attempt::class.java, attempt)
                     post(emptyBody)
                 }.build()
 
@@ -103,10 +125,12 @@ class PaymentExternalSystemAdapterImpl(
             } catch (e: Exception) {
                 when (e) {
                     is SocketTimeoutException -> {
+                        timeouts.increment()
                         logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                         }
+                        return attemptTimeoutMillis != null
                     }
 
                     else -> {
