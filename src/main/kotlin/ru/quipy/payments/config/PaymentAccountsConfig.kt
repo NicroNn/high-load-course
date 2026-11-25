@@ -3,6 +3,7 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.springframework.beans.factory.annotation.Value
@@ -37,6 +38,7 @@ class PaymentAccountsConfig {
         paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
         paymentHttpClient: OkHttpClient,
         admission: PaymentAdmissionControl,
+        registry: MeterRegistry,
     ): List<PaymentExternalSystemAdapter> {
         val request = Request.Builder()
             .url("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token")
@@ -64,6 +66,7 @@ class PaymentAccountsConfig {
                     token,
                     paymentHttpClient,
                     admission,
+                    registry,
                 )
             }
     }

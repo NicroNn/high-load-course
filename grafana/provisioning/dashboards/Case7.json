@@ -1,0 +1,37 @@
+{
+  "uid": "high-load-case-7",
+  "title": "Кейс 7 — повторы платежей",
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": { "from": "now-10m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Повторные вызовы",
+      "description": "Количество отправленных повторных запросов с момента запуска приложения.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, account) (payment_retries_total)",
+          "legendFormat": "{{service}} / {{account}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Таймауты попыток оплаты",
+      "description": "Количество попыток, завершившихся сетевым таймаутом, с момента запуска приложения.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, account) (payment_attempt_timeouts_total)",
+          "legendFormat": "{{service}} / {{account}}"
+        }
+      ]
+    }
+  ]
+}
